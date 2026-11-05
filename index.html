@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>気体分子・圧力シミュレーション</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  *:focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
+  canvas { display: block; }
+  input[type=range] { accent-color: #60a5fa; }
+</style>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen flex flex-col">
+<header class="bg-gray-800 px-6 py-3 border-b border-gray-700">
+  <h1 class="text-xl font-bold text-blue-400">気体分子・圧力シミュレーション</h1>
+  <p class="text-xs text-gray-400">ボイル-シャルルの法則 / マクスウェル-ボルツマン分布</p>
+</header>
+<main class="flex flex-1 gap-4 p-4 overflow-hidden" role="main">
+  <!-- 左: 制御パネル -->
+  <aside class="flex flex-col gap-4 w-56 shrink-0" aria-label="パラメータ設定">
+    <div class="bg-gray-800 rounded-lg p-4 space-y-4">
+      <div>
+        <label for="sliderT" class="text-sm font-medium text-yellow-400">温度 T = <span id="valT">300</span> K</label>
+        <input type="range" id="sliderT" min="50" max="1000" value="300" step="10" class="w-full mt-1" aria-label="温度スライダー">
+      </div>
+      <div>
+        <label for="sliderV" class="text-sm font-medium text-green-400">体積 (幅) = <span id="valV">500</span> px</label>
+        <input type="range" id="sliderV" min="200" max="700" value="500" step="10" class="w-full mt-1" aria-label="体積スライダー">
+      </div>
+      <div>
+        <label for="sliderN" class="text-sm font-medium text-purple-400">粒子数 N = <span id="valN">80</span></label>
+        <input type="range" id="sliderN" min="20" max="200" value="80" step="5" class="w-full mt-1" aria-label="粒子数スライダー">
+      </div>
+    </div>
+    <!-- PVT 表示 -->
+    <div class="bg-gray-800 rounded-lg p-4 space-y-2 text-sm">
+      <div class="flex justify-between">
+        <span class="text-red-400 font-semibold">P (圧力)</span>
+        <span id="dispP" class="font-mono text-white">0.000</span>
+      </div>
+      <div class="flex justify-between">
+        <span class="text-green-400 font-semibold">V (体積)</span>
+        <span id="dispV" class="font-mono text-white">0</span>
+      </div>
+      <div class="flex justify-between">
+        <span class="text-yellow-400 font-semibold">T (温度)</span>
+        <span id="dispT" class="font-mono text-white">300 K</span>
+      </div>
+      <div class="flex justify-between">
+        <span class="text-blue-400 font-semibold">PV/NkT</span>
+        <span id="dispPVnkT" class="font-mono text-white">-</span>
+      </div>
+    </div>
+    <div class="bg-gray-800 rounded-lg p-4 text-xs text-gray-400 leading-relaxed">
+      <p>理想気体: PV = NkT</p>
+      <p class="mt-1">P = 衝突頻度 × 平均運動量 / 壁面長</p>
+    </div>
+  </aside>
+
+  <!-- 中央: シミュレーション Canvas -->
+  <div class="flex flex-col gap-2 flex-1 min-w-0">
+    <div class="relative bg-gray-800 rounded-lg overflow-hidden flex items-center justify-center" style="height: 420px;">
+      <canvas id="simCanvas" aria-label="気体分子シミュレーション" role="img" class="border border-gray-600 rounded"></canvas>
+    </div>
+  </div>
+
+  <!-- 右: 速度分布ヒストグラム -->
+  <div class="flex flex-col gap-2 w-52 shrink-0">
+    <div class="bg-gray-800 rounded-lg p-3">
+      <p class="text-xs font-semibold text-orange-400 mb-2">速度分布（マクスウェル-ボルツマン）</p>
+      <svg id="histSvg" width="180" height="200" aria-label="速度分布ヒストグラム" role="img">
+        <g id="histBars"></g>
+        <line x1="10" y1="185" x2="175" y2="185" stroke="#6b7280" stroke-width="1"/>
+        <line x1="10" y1="10" x2="10" y2="185" stroke="#6b7280" stroke-width="1"/>
+        <text x="90" y="198" fill="#9ca3af" font-size="8" text-anchor="middle">速度</text>
+        <text x="3" y="100" fill="#9ca3af" font-size="8" text-anchor="middle" transform="rotate(-90,3,100)">頻度</text>
+      </svg>
+      <!-- MB分布理論曲線の説明 -->
+      <p class="text-xs text-gray-500 mt-1">橙: 実測 / 青: 理論曲線</p>
+    </div>
+    <div class="bg-gray-800 rounded-lg p-3 text-xs text-gray-400 leading-relaxed">
+      <p class="font-semibold text-orange-300 mb-1">凡例</p>
+      <div class="flex items-center gap-1 mb-1"><span class="w-3 h-3 rounded-full bg-blue-400 inline-block"></span> 低速粒子</div>
+      <div class="flex items-center gap-1 mb-1"><span class="w-3 h-3 rounded-full bg-green-400 inline-block"></span> 中速粒子</div>
+      <div class="flex items-center gap-1"><span class="w-3 h-3 rounded-full bg-red-400 inline-block"></span> 高速粒子</div>
+    </div>
+  </div>
+</main>
+
+<script>
+// --- パラメータ ---
+const canvas = document.getElementById('simCanvas');
+const ctx = canvas.getContext('2d');
+const histSvg = document.getElementById('histSvg');
+const histBars = document.getElementById('histBars');
+
+let T = 300, boxW = 500, N = 80;
+const BOX_H = 380;
+let particles = [];
+// 壁衝突記録（圧力計算用）
+let wallImpulse = 0, wallImpulseTimer = 0;
+const FRAME_WINDOW = 60; // 60フレーム平均
+
+// 速度スケール係数: v_base = sqrt(T/300) * 2
+function baseSpeed() { return Math.sqrt(T / 300) * 2.0; }
+
+function htmlEscape(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function initParticles() {
+  const speed = baseSpeed();
+  particles = Array.from({length: N}, () => {
+    const angle = Math.random() * Math.PI * 2;
+    const v = speed * (0.5 + Math.random());
+    return {
+      x: 10 + Math.random() * (boxW - 20),
+      y: 10 + Math.random() * (BOX_H - 20),
+      vx: Math.cos(angle) * v,
+      vy: Math.sin(angle) * v,
+      r: 4
+    };
+  });
+}
+
+function rescaleParticles(newT, oldT) {
+  // 温度変化時に速度をスケール（エネルギー比の平方根）
+  const ratio = Math.sqrt(newT / oldT);
+  particles.forEach(p => { p.vx *= ratio; p.vy *= ratio; });
+}
+
+function addRemoveParticles(newN, oldN) {
+  const speed = baseSpeed();
+  if (newN > oldN) {
+    for (let i = 0; i < newN - oldN; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const v = speed * (0.5 + Math.random());
+      particles.push({
+        x: 10 + Math.random() * (boxW - 20),
+        y: 10 + Math.random() * (BOX_H - 20),
+        vx: Math.cos(angle) * v, vy: Math.sin(angle) * v, r: 4
+      });
+    }
+  } else {
+    particles.splice(newN);
+  }
+}
+
+function step() {
+  let impulse = 0;
+  particles.forEach(p => {
+    p.x += p.vx; p.y += p.vy;
+    // 壁反射
+    if (p.x - p.r < 0) { p.x = p.r; impulse += Math.abs(p.vx) * 2; p.vx = Math.abs(p.vx); }
+    if (p.x + p.r > boxW) { p.x = boxW - p.r; impulse += Math.abs(p.vx) * 2; p.vx = -Math.abs(p.vx); }
+    if (p.y - p.r < 0) { p.y = p.r; impulse += Math.abs(p.vy) * 2; p.vy = Math.abs(p.vy); }
+    if (p.y + p.r > BOX_H) { p.y = BOX_H - p.r; impulse += Math.abs(p.vy) * 2; p.vy = -Math.abs(p.vy); }
+  });
+  // 粒子間衝突（近傍のみ）
+  for (let i = 0; i < particles.length; i++) {
+    for (let j = i + 1; j < particles.length; j++) {
+      const a = particles[i], b = particles[j];
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const dist = Math.sqrt(dx*dx + dy*dy);
+      if (dist < a.r + b.r && dist > 0) {
+        const nx = dx/dist, ny = dy/dist;
+        const dvx = a.vx - b.vx, dvy = a.vy - b.vy;
+        const dot = dvx*nx + dvy*ny;
+        if (dot > 0) {
+          a.vx -= dot*nx; a.vy -= dot*ny;
+          b.vx += dot*nx; b.vy += dot*ny;
+        }
+        // 重なり解消
+        const overlap = (a.r + b.r - dist) / 2;
+        a.x -= overlap*nx; a.y -= overlap*ny;
+        b.x += overlap*nx; b.y += overlap*ny;
+      }
+    }
+  }
+  // 圧力: 60フレーム平均
+  wallImpulse = wallImpulse * (FRAME_WINDOW - 1) / FRAME_WINDOW + impulse / FRAME_WINDOW;
+  wallImpulseTimer++;
+}
+
+function getSpeed(p) { return Math.sqrt(p.vx*p.vx + p.vy*p.vy); }
+
+function colorBySpeed(speed) {
+  const maxV = baseSpeed() * 2.5;
+  const ratio = Math.min(speed / maxV, 1);
+  if (ratio < 0.4) return `hsl(210,80%,65%)`;
+  if (ratio < 0.7) return `hsl(130,70%,55%)`;
+  return `hsl(0,80%,60%)`;
+}
+
+function draw() {
+  canvas.width = boxW; canvas.height = BOX_H;
+  ctx.clearRect(0, 0, boxW, BOX_H);
+  // ボックス背景
+  ctx.fillStyle = '#111827';
+  ctx.fillRect(0, 0, boxW, BOX_H);
+  ctx.strokeStyle = '#374151';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(1, 1, boxW-2, BOX_H-2);
+
+  particles.forEach(p => {
+    const spd = getSpeed(p);
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+    ctx.fillStyle = colorBySpeed(spd);
+    ctx.fill();
+  });
+}
+
+function updateHistogram() {
+  const NUM_BINS = 15;
+  const maxV = baseSpeed() * 3.5;
+  const binSize = maxV / NUM_BINS;
+  const bins = new Array(NUM_BINS).fill(0);
+  particles.forEach(p => {
+    const spd = getSpeed(p);
+    const idx = Math.min(Math.floor(spd / binSize), NUM_BINS - 1);
+    bins[idx]++;
+  });
+  const maxBin = Math.max(...bins, 1);
+  const svgW = 165, svgH = 175, left = 10, top = 10;
+  const barW = (svgW - left) / NUM_BINS - 1;
+
+  // 理論MB分布
+  // f(v) ∝ v^2 * exp(-mv^2/(2kT)), 2D: f(v) ∝ v * exp(-mv^2/(2kT))
+  const vp = baseSpeed() * Math.sqrt(2); // 最頻速度
+  const theoryCurve = Array.from({length: NUM_BINS}, (_, i) => {
+    const v = (i + 0.5) * binSize;
+    return v * Math.exp(-(v*v)/(vp*vp));
+  });
+  const maxTheory = Math.max(...theoryCurve, 1e-9);
+  const theoryScale = (svgH - top) / maxTheory * 0.9;
+
+  let svgContent = '';
+  bins.forEach((count, i) => {
+    const x = left + i * (barW + 1);
+    const barH = (count / maxBin) * (svgH - top) * 0.9;
+    const y = svgH - barH;
+    svgContent += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${barH.toFixed(1)}" fill="#f97316" opacity="0.7"/>`;
+  });
+  // 理論曲線 (折れ線)
+  const points = theoryCurve.map((val, i) => {
+    const x = left + (i + 0.5) * (barW + 1);
+    const y = svgH - val * theoryScale;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  svgContent += `<polyline points="${points}" fill="none" stroke="#60a5fa" stroke-width="1.5" stroke-linejoin="round"/>`;
+  histBars.innerHTML = svgContent;
+}
+
+function updateDisplay() {
+  // P = 壁衝突impulse / (2 * (boxW + BOX_H)) 正規化
+  const wallLen = 2 * (boxW + BOX_H);
+  const P = wallImpulse / wallLen;
+  const V = boxW * BOX_H;
+  const kT = T * 0.001; // 無次元化
+  const PVnkT = N > 0 ? (P * V / (N * kT)).toFixed(3) : '-';
+  document.getElementById('dispP').textContent = P.toFixed(4);
+  document.getElementById('dispV').textContent = V.toLocaleString();
+  document.getElementById('dispT').textContent = T + ' K';
+  document.getElementById('dispPVnkT').textContent = PVnkT;
+}
+
+let frameCount = 0;
+function loop() {
+  step();
+  draw();
+  frameCount++;
+  if (frameCount % 5 === 0) {
+    updateHistogram();
+    updateDisplay();
+  }
+  requestAnimationFrame(loop);
+}
+
+// スライダーイベント
+document.getElementById('sliderT').addEventListener('input', e => {
+  const newT = +e.target.value;
+  document.getElementById('valT').textContent = newT;
+  rescaleParticles(newT, T);
+  T = newT;
+});
+document.getElementById('sliderV').addEventListener('input', e => {
+  boxW = +e.target.value;
+  document.getElementById('valV').textContent = boxW;
+  // 壁外にいる粒子をクリップ
+  particles.forEach(p => { p.x = Math.min(p.x, boxW - p.r); });
+});
+document.getElementById('sliderN').addEventListener('input', e => {
+  const newN = +e.target.value;
+  document.getElementById('valN').textContent = newN;
+  addRemoveParticles(newN, N);
+  N = newN;
+});
+
+initParticles();
+loop();
+</script>
+</body>
+</html>
